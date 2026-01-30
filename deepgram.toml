@@ -1,0 +1,14 @@
+[meta]
+title = "FastAPI Live Transcription Starter"
+description = "Get started using Deepgram's Live STT with this FastAPI demo app"
+author = "Deepgram DX Team <devrel@deepgram.com> (https://developers.deepgram.com)"
+repository = "https://github.com/deepgram-starters/fastapi-live-transcription"
+useCase = "Live STT"
+language = "Python"
+framework = "FastAPI"
+
+[build]
+command = "make init"
+
+[dev]
+command = "make dev"
