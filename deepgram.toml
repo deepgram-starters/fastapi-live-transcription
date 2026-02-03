@@ -1,14 +1,39 @@
 [meta]
-title = "FastAPI Live Transcription Starter"
+title = "FastAPI Live Transcription"
 description = "Get started using Deepgram's Live STT with this FastAPI demo app"
 author = "Deepgram DX Team <devrel@deepgram.com> (https://developers.deepgram.com)"
 repository = "https://github.com/deepgram-starters/fastapi-live-transcription"
-useCase = "Live STT"
+useCase = "Live Transcription"
 language = "Python"
 framework = "FastAPI"
+sdk = "N/A"
+
+[install.pre]
+command = ["git submodule update --init --recursive", "python3 -m venv venv"]
+message = "Submodules initialized and virtual environment created"
+
+[install]
+command = ["./venv/bin/pip install -r requirements.txt", "cd frontend && pnpm install"]
+message = "Dependencies installed"
+
+[install.config]
+sample = "sample.env"
+output = ".env"
 
 [build]
-command = "make init"
+command = "cd frontend && pnpm build"
+message = "Frontend built"
 
-[dev]
-command = "make dev"
+[check]
+command = ["git --version", "python3 --version", "pip3 --version"]
+
+[start.pre]
+command = "test -f .env || (echo '❌ .env not found' && exit 1)"
+
+[start]
+command = ["./venv/bin/python app.py", "cd frontend && corepack pnpm run dev -- --port 8080 --no-open"]
+parallel = true
+
+[clean]
+command = ["rm -rf venv", "rm -rf frontend/node_modules", "rm -rf frontend/dist", "find . -type f -name '*.pyc' -delete", "find . -type d -name __pycache__ -exec rm -rf {} +"]
+message = "Build artifacts cleaned"
