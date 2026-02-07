@@ -3,10 +3,11 @@ title = "FastAPI Live Transcription"
 description = "Get started using Deepgram's Live STT with this FastAPI demo app"
 author = "Deepgram DX Team <devrel@deepgram.com> (https://developers.deepgram.com)"
 repository = "https://github.com/deepgram-starters/fastapi-live-transcription"
-useCase = "Live Transcription"
-language = "Python"
-framework = "FastAPI"
+useCase = "live-transcription"
+language = "python"
+framework = "fastapi"
 sdk = "N/A"
+tags = ["live-transcription", "live-stt", "real-time-transcription", "real-time-asr", "streaming-transcription", "live-speech-to-text", "python", "fastapi"]
 
 [install.pre]
 command = ["git submodule update --init --recursive", "python3 -m venv venv"]
