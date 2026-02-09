@@ -1,12 +1,21 @@
 """
 FastAPI Live Transcription Starter - Raw WebSocket proxy to Deepgram
+
+Key Features:
+- WebSocket endpoint: /api/live-transcription
+- JWT session auth with page nonce (production only)
+- Raw WebSocket proxy to Deepgram STT API
 """
 
 import os
 import json
+import secrets
+import time
 import asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+
+import jwt
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header, Depends
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -29,6 +38,91 @@ def load_api_key():
 API_KEY = load_api_key()
 DEEPGRAM_STT_URL = "wss://api.deepgram.com/v1/listen"
 
+# ============================================================================
+# SESSION AUTH - JWT tokens with page nonce for production security
+# ============================================================================
+
+SESSION_SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
+REQUIRE_NONCE = bool(os.environ.get("SESSION_SECRET"))
+
+# In-memory nonce store: nonce -> expiry timestamp
+session_nonces = {}
+NONCE_TTL = 5 * 60  # 5 minutes
+JWT_EXPIRY = 3600  # 1 hour
+
+
+def generate_nonce():
+    """Generates a single-use nonce and stores it with an expiry."""
+    nonce = secrets.token_hex(16)
+    session_nonces[nonce] = time.time() + NONCE_TTL
+    return nonce
+
+
+def consume_nonce(nonce):
+    """Validates and consumes a nonce (single-use). Returns True if valid."""
+    expiry = session_nonces.pop(nonce, None)
+    if expiry is None:
+        return False
+    return time.time() < expiry
+
+
+def cleanup_nonces():
+    """Remove expired nonces."""
+    now = time.time()
+    expired = [k for k, v in session_nonces.items() if now >= v]
+    for k in expired:
+        del session_nonces[k]
+
+
+# Read frontend/dist/index.html template for nonce injection
+_index_html_template = None
+try:
+    with open(os.path.join(os.path.dirname(__file__), "frontend", "dist", "index.html")) as f:
+        _index_html_template = f.read()
+except FileNotFoundError:
+    pass  # No built frontend (dev mode)
+
+
+def require_session(authorization: str = Header(None)):
+    """FastAPI dependency for JWT session validation."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "type": "AuthenticationError",
+                    "code": "MISSING_TOKEN",
+                    "message": "Authorization header with Bearer token is required",
+                }
+            }
+        )
+    token = authorization[7:]
+    try:
+        jwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "type": "AuthenticationError",
+                    "code": "INVALID_TOKEN",
+                    "message": "Session expired, please refresh the page",
+                }
+            }
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error": {
+                    "type": "AuthenticationError",
+                    "code": "INVALID_TOKEN",
+                    "message": "Invalid session token",
+                }
+            }
+        )
+
+
 app = FastAPI(title="Deepgram Live STT API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -37,10 +131,73 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============================================================================
+# SESSION ROUTES - Auth endpoints (unprotected)
+# ============================================================================
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_index():
+    """Serve index.html with injected session nonce (production only)."""
+    if not _index_html_template:
+        raise HTTPException(status_code=404, detail="Frontend not built. Run make build first.")
+    cleanup_nonces()
+    nonce = generate_nonce()
+    html = _index_html_template.replace(
+        "</head>",
+        f'<meta name="session-nonce" content="{nonce}">\n</head>'
+    )
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/session")
+async def get_session(x_session_nonce: str = Header(None)):
+    """Issues a JWT. In production, requires valid nonce via X-Session-Nonce header."""
+    if REQUIRE_NONCE:
+        if not x_session_nonce or not consume_nonce(x_session_nonce):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": {
+                        "type": "AuthenticationError",
+                        "code": "INVALID_NONCE",
+                        "message": "Valid session nonce required. Please refresh the page.",
+                    }
+                }
+            )
+    token = jwt.encode(
+        {"iat": int(time.time()), "exp": int(time.time()) + JWT_EXPIRY},
+        SESSION_SECRET,
+        algorithm="HS256",
+    )
+    return JSONResponse(content={"token": token})
+
+
+# ============================================================================
+# WEBSOCKET ROUTE
+# ============================================================================
+
 @app.websocket("/api/live-transcription")
 async def live_transcription(websocket: WebSocket):
     """Raw WebSocket proxy endpoint for live STT"""
-    await websocket.accept()
+    # Validate JWT from subprotocol
+    protocols = websocket.headers.get("sec-websocket-protocol", "")
+    protocol_list = [p.strip() for p in protocols.split(",")]
+    valid_proto = None
+    for proto in protocol_list:
+        if proto.startswith("access_token."):
+            token = proto[len("access_token."):]
+            try:
+                jwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
+                valid_proto = proto
+            except Exception:
+                pass
+            break
+
+    if not valid_proto:
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+
+    await websocket.accept(subprotocol=valid_proto)
     print("Client connected to /api/live-transcription")
 
     deepgram_ws = None
@@ -159,5 +316,9 @@ async def get_metadata():
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"\n🚀 FastAPI Live STT Server: http://localhost:{CONFIG['port']}\n")
+    nonce_status = " (nonce required)" if REQUIRE_NONCE else ""
+    print(f"\n🚀 FastAPI Live STT Server: http://localhost:{CONFIG['port']}")
+    print(f"   GET  /api/session{nonce_status}")
+    print(f"   WS   /api/live-transcription (auth required)")
+    print(f"   GET  /api/metadata\n")
     uvicorn.run(app, host=CONFIG["host"], port=CONFIG["port"])
