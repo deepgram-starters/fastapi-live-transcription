@@ -130,7 +130,12 @@ class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
                 {"text": '{"type":"CloseStream"}'},
                 {"type": "websocket.disconnect"},
             ],
-            query_params={"model": "nova-3", "language": "es"},
+            query_params={
+                "model": "nova-3",
+                "language": "es",
+                "channels": "1",
+                "no_delay": "true",
+            },
             receive_delay=0.001,
         )
 
@@ -142,6 +147,11 @@ class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(connection.finalize_messages[0].channel, 1)
         self.assertEqual(sdk.listen.v1.query["model"], "nova-3")
         self.assertEqual(sdk.listen.v1.query["language"], "es")
+        self.assertEqual(sdk.listen.v1.query["channels"], "1")
+        self.assertEqual(
+            sdk.listen.v1.query["request_options"],
+            {"additional_query_parameters": {"no_delay": "true"}},
+        )
         self.assertEqual(
             websocket.text_messages,
             ['{"type":"Results","is_final":true}'],

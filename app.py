@@ -1,10 +1,10 @@
 """
-FastAPI Live Transcription Starter - Raw WebSocket proxy to Deepgram
+FastAPI Live Transcription Starter - Deepgram SDK WebSocket proxy
 
 Key Features:
 - WebSocket endpoint: /api/live-transcription
 - JWT session auth for API protection
-- Raw WebSocket proxy to Deepgram STT API
+- Deepgram SDK proxy to the Live STT API
 """
 
 import os
@@ -184,6 +184,15 @@ async def live_transcription(websocket: WebSocket):
     punctuate = websocket.query_params.get("punctuate", "true")
     encoding = websocket.query_params.get("encoding", "linear16")
     sample_rate = websocket.query_params.get("sample_rate", "16000")
+    channels = websocket.query_params.get("channels", "1")
+    typed_parameters = {
+        "model", "language", "smart_format", "interim_results", "punctuate",
+        "encoding", "sample_rate", "channels",
+    }
+    extra_query_parameters = {
+        name: value for name, value in websocket.query_params.items()
+        if name not in typed_parameters
+    }
 
     print(f"Connecting to Deepgram STT: model={model}, language={language}")
 
@@ -197,6 +206,11 @@ async def live_transcription(websocket: WebSocket):
             punctuate=punctuate,
             encoding=encoding,
             sample_rate=sample_rate,
+            channels=channels,
+            request_options=(
+                {"additional_query_parameters": extra_query_parameters}
+                if extra_query_parameters else None
+            ),
         ) as connection:
             print("✓ Connected to Deepgram STT API")
 
