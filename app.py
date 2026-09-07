@@ -154,7 +154,7 @@ async def get_session():
 
 @app.websocket("/api/live-transcription")
 async def live_transcription(websocket: WebSocket):
-    """Raw WebSocket proxy endpoint for live STT"""
+    """SDK-backed WebSocket proxy endpoint for live STT"""
     # Validate JWT from subprotocol
     protocols = websocket.headers.get("sec-websocket-protocol", "")
     protocol_list = [p.strip() for p in protocols.split(",")]

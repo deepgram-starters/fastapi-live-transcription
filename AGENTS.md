@@ -98,7 +98,7 @@ defaults in the `deepgram.listen.v1.connect` call in the backend WebSocket handl
 | `channels` | `1` | `1`, `2` | Mono or stereo |
 
 ### Adding More Deepgram Features via Query Params
-These can be appended to the Deepgram WebSocket URL as query parameters:
+These can be appended to the browser-facing WebSocket URL as query parameters:
 
 | Feature | Parameter | Example | Effect |
 |---------|-----------|---------|--------|
