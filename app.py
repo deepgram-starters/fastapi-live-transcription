@@ -204,6 +204,14 @@ async def live_transcription(websocket: WebSocket):
                     async for message in connection:
                         if isinstance(message, (bytes, bytearray)):
                             await websocket.send_bytes(bytes(message))
+                        elif message is None:
+                            # The SDK represents an upstream Error frame as None
+                            # when that frame is outside its response union.
+                            await websocket.send_text(json.dumps({
+                                "type": "Error",
+                                "description": "Deepgram reported a stream error",
+                                "code": "PROVIDER_ERROR"
+                            }))
                         elif hasattr(message, "model_dump_json"):
                             await websocket.send_text(message.model_dump_json())
                         else:

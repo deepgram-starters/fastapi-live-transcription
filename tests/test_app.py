@@ -189,6 +189,26 @@ class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(secret, observed)
         self.assertNotIn("Authorization", observed)
 
+    async def test_sdk_error_frame_reaches_client_as_provider_error(self):
+        sdk = FakeDeepgram(FakeConnect(connection=FakeConnection(messages=[None])))
+        websocket = FakeWebSocket(
+            self.token(),
+            [{"type": "websocket.disconnect"}],
+            receive_delay=0.01,
+        )
+
+        with patch.object(app, "deepgram", sdk):
+            await app.live_transcription(websocket)
+
+        self.assertEqual(
+            json.loads(websocket.text_messages[0]),
+            {
+                "type": "Error",
+                "description": "Deepgram reported a stream error",
+                "code": "PROVIDER_ERROR",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
