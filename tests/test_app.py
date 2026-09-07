@@ -9,6 +9,7 @@ os.environ.setdefault("DEEPGRAM_API_KEY", "test-key")
 
 import app
 from deepgram.core.api_error import ApiError
+from websockets.exceptions import ConnectionClosedOK
 
 
 class FakeWebSocket:
@@ -45,6 +46,7 @@ class FakeConnection:
         self.stream_error_sent = False
         self.media = []
         self.controls = []
+        self.finalize_messages = []
 
     async def recv(self):
         try:
@@ -61,8 +63,9 @@ class FakeConnection:
     async def send_keep_alive(self):
         self.controls.append("KeepAlive")
 
-    async def send_finalize(self):
+    async def send_finalize(self, message=None):
         self.controls.append("Finalize")
+        self.finalize_messages.append(message)
 
     async def send_close_stream(self):
         self.controls.append("CloseStream")
@@ -102,6 +105,11 @@ class ModelMessage:
         return '{"type":"Results","is_final":true}'
 
 
+class NormalClose(ConnectionClosedOK):
+    def __init__(self):
+        pass
+
+
 class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
     def token(self):
         return app.jwt.encode(
@@ -118,7 +126,7 @@ class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
             [
                 {"bytes": b"audio"},
                 {"text": '{"type":"KeepAlive"}'},
-                {"text": '{"type":"Finalize"}'},
+                {"text": '{"type":"Finalize","channel":1}'},
                 {"text": '{"type":"CloseStream"}'},
                 {"type": "websocket.disconnect"},
             ],
@@ -131,6 +139,7 @@ class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(connection.media, [b"audio"])
         self.assertEqual(connection.controls, ["KeepAlive", "Finalize", "CloseStream"])
+        self.assertEqual(connection.finalize_messages[0].channel, 1)
         self.assertEqual(sdk.listen.v1.query["model"], "nova-3")
         self.assertEqual(sdk.listen.v1.query["language"], "es")
         self.assertEqual(
@@ -211,6 +220,21 @@ class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
                 "code": "PROVIDER_ERROR",
             },
         )
+
+    async def test_normal_upstream_close_does_not_emit_provider_error(self):
+        sdk = FakeDeepgram(
+            FakeConnect(connection=FakeConnection(stream_error=NormalClose()))
+        )
+        websocket = FakeWebSocket(
+            self.token(),
+            [{"type": "websocket.disconnect"}],
+            receive_delay=0.01,
+        )
+
+        with patch.object(app, "deepgram", sdk):
+            await app.live_transcription(websocket)
+
+        self.assertEqual(websocket.text_messages, [])
 
 
 if __name__ == "__main__":

@@ -24,6 +24,8 @@ import toml
 from deepgram import AsyncDeepgramClient
 from deepgram.environment import DeepgramClientEnvironment
 from deepgram.core.api_error import ApiError
+from deepgram.listen.v1.types import ListenV1Finalize
+from websockets.exceptions import ConnectionClosedOK
 
 load_dotenv(override=False)
 
@@ -221,7 +223,7 @@ async def live_transcription(websocket: WebSocket):
                             await websocket.send_text(
                                 json.dumps({"type": getattr(message, "type", "Unknown")})
                             )
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, ConnectionClosedOK):
                     pass
                 except Exception as e:
                     # Sanitized mid-stream error. Never surface str(e): an
@@ -270,7 +272,12 @@ async def live_transcription(websocket: WebSocket):
                     if ctype == "KeepAlive":
                         await connection.send_keep_alive()
                     elif ctype == "Finalize":
-                        await connection.send_finalize()
+                        if "channel" in control:
+                            await connection.send_finalize(
+                                ListenV1Finalize(type="Finalize", channel=control["channel"])
+                            )
+                        else:
+                            await connection.send_finalize()
                     elif ctype == "CloseStream":
                         await connection.send_close_stream()
                     else:
