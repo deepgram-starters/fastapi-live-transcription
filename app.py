@@ -201,17 +201,20 @@ async def live_transcription(websocket: WebSocket):
             # Task to forward transcription results from Deepgram to the client
             async def forward_from_deepgram():
                 try:
-                    async for message in connection:
+                    while True:
+                        # recv() preserves unsupported frames as dictionaries;
+                        # the async iterator logs and silently skips them.
+                        message = await connection.recv()
                         if isinstance(message, (bytes, bytearray)):
                             await websocket.send_bytes(bytes(message))
-                        elif message is None:
-                            # The SDK represents an upstream Error frame as None
-                            # when that frame is outside its response union.
+                        elif isinstance(message, dict) and message.get("type") == "Error":
                             await websocket.send_text(json.dumps({
                                 "type": "Error",
                                 "description": "Deepgram reported a stream error",
                                 "code": "PROVIDER_ERROR"
                             }))
+                        elif isinstance(message, dict):
+                            await websocket.send_text(json.dumps(message))
                         elif hasattr(message, "model_dump_json"):
                             await websocket.send_text(message.model_dump_json())
                         else:

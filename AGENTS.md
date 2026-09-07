@@ -85,7 +85,8 @@ Frontend: `cd frontend && corepack pnpm install`
 ## Customization Guide
 
 ### Changing Default Parameters
-The WebSocket connection URL passes parameters to Deepgram. Find where the Deepgram WebSocket URL is constructed in the backend and modify defaults:
+The browser WebSocket connection URL passes parameters to the backend. Update the
+defaults in the `deepgram.listen.v1.connect` call in the backend WebSocket handler:
 
 | Parameter | Default | Options | Effect |
 |-----------|---------|---------|--------|
@@ -110,7 +111,8 @@ These can be appended to the Deepgram WebSocket URL as query parameters:
 | Keywords | `keywords` | `deepgram:2` | Boost keyword with weight |
 | No delay | `no_delay` | `true` | Minimize latency (may reduce accuracy) |
 
-**Backend:** Append params to the Deepgram URL in the WebSocket proxy handler.
+**Backend:** Read the parameter in the WebSocket proxy handler and pass it to
+`deepgram.listen.v1.connect`.
 
 **Frontend:** The frontend sends these as query params when opening the WebSocket. To add a UI control for a new param, edit `frontend/main.js` — add an input/checkbox and include it in the `URLSearchParams` when connecting.
 
@@ -146,6 +148,7 @@ The frontend is a git submodule from `deepgram-starters/live-transcription-html`
 | `PORT` | No | `8081` | Backend server port |
 | `HOST` | No | `0.0.0.0` | Backend bind address |
 | `SESSION_SECRET` | No | — | JWT signing secret (production) |
+| `DEEPGRAM_BASE_URL` | No | — | Custom Deepgram WebSocket base URL for non-production environments |
 
 ## Conventional Commits
 

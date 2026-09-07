@@ -40,19 +40,20 @@ class FakeWebSocket:
 
 class FakeConnection:
     def __init__(self, messages=(), stream_error=None):
-        self.messages = messages
+        self.messages = iter(messages)
         self.stream_error = stream_error
+        self.stream_error_sent = False
         self.media = []
         self.controls = []
 
-    def __aiter__(self):
-        return self._messages()
-
-    async def _messages(self):
-        for message in self.messages:
-            yield message
-        if self.stream_error:
-            raise self.stream_error
+    async def recv(self):
+        try:
+            return next(self.messages)
+        except StopIteration:
+            if self.stream_error and not self.stream_error_sent:
+                self.stream_error_sent = True
+                raise self.stream_error
+            await asyncio.Future()
 
     async def send_media(self, audio):
         self.media.append(audio)
@@ -190,7 +191,9 @@ class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Authorization", observed)
 
     async def test_sdk_error_frame_reaches_client_as_provider_error(self):
-        sdk = FakeDeepgram(FakeConnect(connection=FakeConnection(messages=[None])))
+        sdk = FakeDeepgram(FakeConnect(connection=FakeConnection(messages=[
+            {"type": "Error", "description": "invalid audio"}
+        ])))
         websocket = FakeWebSocket(
             self.token(),
             [{"type": "websocket.disconnect"}],
