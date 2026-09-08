@@ -1,10 +1,10 @@
 """
-FastAPI Live Transcription Starter - Raw WebSocket proxy to Deepgram
+FastAPI Live Transcription Starter - Deepgram SDK WebSocket proxy
 
 Key Features:
 - WebSocket endpoint: /api/live-transcription
 - JWT session auth for API protection
-- Raw WebSocket proxy to Deepgram STT API
+- Deepgram SDK proxy to the Live STT API
 """
 
 import os
@@ -19,8 +19,13 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import websockets
 import toml
+
+from deepgram import AsyncDeepgramClient
+from deepgram.environment import DeepgramClientEnvironment
+from deepgram.core.api_error import ApiError
+from deepgram.listen.v1.types import ListenV1Finalize
+from websockets.exceptions import ConnectionClosedOK
 
 load_dotenv(override=False)
 
@@ -36,7 +41,24 @@ def load_api_key():
     return api_key
 
 API_KEY = load_api_key()
-DEEPGRAM_STT_URL = "wss://api.deepgram.com/v1/listen"
+
+
+# One async SDK client, reused across connections; the browser never sees the API key.
+# DEEPGRAM_BASE_URL (e.g. wss://api.staging.deepgram.com) overrides the default
+# production endpoint used for the /v1/listen websocket.
+def _build_client():
+    base_url = os.environ.get("DEEPGRAM_BASE_URL")
+    if base_url:
+        https = base_url.replace("wss://", "https://").replace("ws://", "http://")
+        env = DeepgramClientEnvironment(
+            base=https, production=base_url, agent=base_url, agent_rest=https
+        )
+        print(f"Using custom Deepgram base URL: {base_url}")
+        return AsyncDeepgramClient(api_key=API_KEY, environment=env)
+    return AsyncDeepgramClient(api_key=API_KEY)
+
+
+deepgram = _build_client()
 
 # ============================================================================
 # SESSION AUTH - JWT tokens for API protection
@@ -132,7 +154,7 @@ async def get_session():
 
 @app.websocket("/api/live-transcription")
 async def live_transcription(websocket: WebSocket):
-    """Raw WebSocket proxy endpoint for live STT"""
+    """SDK-backed WebSocket proxy endpoint for live STT"""
     # Validate JWT from subprotocol
     protocols = websocket.headers.get("sec-websocket-protocol", "")
     protocol_list = [p.strip() for p in protocols.split(",")]
@@ -154,109 +176,154 @@ async def live_transcription(websocket: WebSocket):
     await websocket.accept(subprotocol=valid_proto)
     print("Client connected to /api/live-transcription")
 
-    deepgram_ws = None
-    forward_task = None
-    stop_event = asyncio.Event()
+    # Get query parameters
+    model = websocket.query_params.get("model", "nova-2")
+    language = websocket.query_params.get("language", "en")
+    smart_format = websocket.query_params.get("smart_format", "true")
+    interim_results = websocket.query_params.get("interim_results", "true")
+    punctuate = websocket.query_params.get("punctuate", "true")
+    encoding = websocket.query_params.get("encoding", "linear16")
+    sample_rate = websocket.query_params.get("sample_rate", "16000")
+    channels = websocket.query_params.get("channels", "1")
+    typed_parameters = {
+        "model", "language", "smart_format", "interim_results", "punctuate",
+        "encoding", "sample_rate", "channels",
+    }
+    extra_query_parameters = {
+        name: value for name, value in websocket.query_params.items()
+        if name not in typed_parameters
+    }
+
+    print(f"Connecting to Deepgram STT: model={model}, language={language}")
 
     try:
-        # Get query parameters
-        model = websocket.query_params.get("model", "nova-2")
-        language = websocket.query_params.get("language", "en")
-        smart_format = websocket.query_params.get("smart_format", "true")
-        interim_results = websocket.query_params.get("interim_results", "true")
-        punctuate = websocket.query_params.get("punctuate", "true")
-        encoding = websocket.query_params.get("encoding", "linear16")
-        sample_rate = websocket.query_params.get("sample_rate", "16000")
+        # Connect to Deepgram live STT through the official SDK
+        async with deepgram.listen.v1.connect(
+            model=model,
+            language=language,
+            smart_format=smart_format,
+            interim_results=interim_results,
+            punctuate=punctuate,
+            encoding=encoding,
+            sample_rate=sample_rate,
+            channels=channels,
+            request_options=(
+                {"additional_query_parameters": extra_query_parameters}
+                if extra_query_parameters else None
+            ),
+        ) as connection:
+            print("✓ Connected to Deepgram STT API")
 
-        # Build Deepgram WebSocket URL with parameters
-        deepgram_url = (
-            f"{DEEPGRAM_STT_URL}?"
-            f"model={model}&"
-            f"language={language}&"
-            f"smart_format={smart_format}&"
-            f"interim_results={interim_results}&"
-            f"punctuate={punctuate}&"
-            f"encoding={encoding}&"
-            f"sample_rate={sample_rate}"
-        )
+            # Task to forward transcription results from Deepgram to the client
+            async def forward_from_deepgram():
+                try:
+                    while True:
+                        # recv() preserves unsupported frames as dictionaries;
+                        # the async iterator logs and silently skips them.
+                        message = await connection.recv()
+                        if isinstance(message, (bytes, bytearray)):
+                            await websocket.send_bytes(bytes(message))
+                        elif isinstance(message, dict) and message.get("type") == "Error":
+                            await websocket.send_text(json.dumps({
+                                "type": "Error",
+                                "description": "Deepgram reported a stream error",
+                                "code": "PROVIDER_ERROR"
+                            }))
+                        elif isinstance(message, dict):
+                            await websocket.send_text(json.dumps(message))
+                        elif hasattr(message, "model_dump_json"):
+                            await websocket.send_text(message.model_dump_json())
+                        else:
+                            await websocket.send_text(
+                                json.dumps({"type": getattr(message, "type", "Unknown")})
+                            )
+                except (asyncio.CancelledError, ConnectionClosedOK):
+                    pass
+                except Exception as e:
+                    # Sanitized mid-stream error. Never surface str(e): an
+                    # ApiError's string form embeds the Authorization: Token
+                    # <key> header (deepgram-sdk 7.6.0).
+                    detail = (f"Deepgram stream error (HTTP {e.status_code})"
+                              if isinstance(e, ApiError) else
+                              f"Deepgram stream error ({type(e).__name__})")
+                    print(f"Error forwarding from Deepgram: {detail}")
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "Error",
+                            "description": detail,
+                            "code": "PROVIDER_ERROR"
+                        }))
+                    except Exception:
+                        pass
 
-        print(f"Connecting to Deepgram STT: model={model}, language={language}")
+            # Start forwarding task
+            forward_task = asyncio.create_task(forward_from_deepgram())
 
-        # Connect to Deepgram
-        deepgram_ws = await websockets.connect(
-            deepgram_url,
-            additional_headers={"Authorization": f"Token {API_KEY}"}
-        )
-        print("✓ Connected to Deepgram STT API")
-
-        # Task to forward messages from Deepgram to client
-        async def forward_from_deepgram():
+            # Forward audio + control messages from client to Deepgram
             try:
-                async for message in deepgram_ws:
-                    if stop_event.is_set():
+                while True:
+                    message = await websocket.receive()
+                    if message.get("type") == "websocket.disconnect":
                         break
 
-                    # Forward message to client
-                    if isinstance(message, bytes):
-                        await websocket.send_bytes(message)
+                    audio = message.get("bytes")
+                    if audio is not None:
+                        await connection.send_media(audio)
+                        continue
+
+                    text = message.get("text")
+                    if text is None:
+                        continue
+
+                    # Browser control messages (KeepAlive / Finalize / CloseStream)
+                    try:
+                        control = json.loads(text)
+                    except (ValueError, TypeError):
+                        print("Ignoring non-JSON message from client")
+                        continue
+
+                    ctype = control.get("type")
+                    if ctype == "KeepAlive":
+                        await connection.send_keep_alive()
+                    elif ctype == "Finalize":
+                        if "channel" in control:
+                            await connection.send_finalize(
+                                ListenV1Finalize(type="Finalize", channel=control["channel"])
+                            )
+                        else:
+                            await connection.send_finalize()
+                    elif ctype == "CloseStream":
+                        await connection.send_close_stream()
                     else:
-                        await websocket.send_text(message)
+                        print(f"Ignoring unknown client message type: {ctype}")
 
-            except websockets.exceptions.ConnectionClosed as e:
-                print(f"Deepgram connection closed: {e.code} {e.reason}")
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                print(f"Error forwarding from Deepgram: {e}")
-                await websocket.send_text(json.dumps({
-                    "type": "Error",
-                    "description": str(e),
-                    "code": "PROVIDER_ERROR"
-                }))
-
-        # Start forwarding task
-        forward_task = asyncio.create_task(forward_from_deepgram())
-
-        # Forward messages from client to Deepgram
-        try:
-            while True:
-                message = await websocket.receive()
-
-                if "text" in message:
-                    await deepgram_ws.send(message["text"])
-                elif "bytes" in message:
-                    await deepgram_ws.send(message["bytes"])
-
-        except WebSocketDisconnect:
-            print("Client disconnected")
-        except Exception as e:
-            print(f"Error forwarding to Deepgram: {e}")
+            except WebSocketDisconnect:
+                print("Client disconnected")
+            finally:
+                forward_task.cancel()
+                try:
+                    await forward_task
+                except asyncio.CancelledError:
+                    pass
 
     except Exception as e:
-        print(f"WebSocket error: {e}")
-        await websocket.send_text(json.dumps({
-            "type": "Error",
-            "description": str(e),
-            "code": "CONNECTION_FAILED"
-        }))
+        # Sanitized connect error. Never surface str(e): an ApiError's string
+        # form embeds the Authorization: Token <key> header (deepgram-sdk 7.6.0),
+        # which would otherwise reach both the server log and the browser.
+        detail = (f"Deepgram rejected the connection (HTTP {e.status_code})"
+                  if isinstance(e, ApiError) else
+                  f"Failed to connect to Deepgram ({type(e).__name__})")
+        print(f"WebSocket error: {detail}")
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "Error",
+                "description": detail,
+                "code": "CONNECTION_FAILED"
+            }))
+        except Exception:
+            pass
 
     finally:
-        # Cleanup
-        stop_event.set()
-
-        if forward_task:
-            forward_task.cancel()
-            try:
-                await forward_task
-            except asyncio.CancelledError:
-                pass
-
-        if deepgram_ws:
-            try:
-                await deepgram_ws.close()
-            except Exception as e:
-                print(f"Error closing Deepgram connection: {e}")
-
         print("Connection cleanup complete")
 
 @app.get("/api/metadata")

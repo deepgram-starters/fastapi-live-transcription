@@ -1,4 +1,4 @@
-.PHONY: help check check-prereqs init install install-backend install-frontend start-backend start-frontend start test update clean status eject-frontend
+.PHONY: help check check-prereqs init install install-backend install-frontend start-backend start-frontend start test test-unit update clean status eject-frontend
 
 help:
 	@echo "Available commands:"
@@ -9,6 +9,8 @@ help:
 	@echo "  make start             - Start application (backend + frontend)"
 	@echo "  make start-backend     - Start backend only (port 8081)"
 	@echo "  make start-frontend    - Start frontend only (port 8080)"
+	@echo "  make test-unit         - Run backend unit tests"
+	@echo "  make test              - Run unit and live conformance tests"
 	@echo "  make update            - Update submodules to latest"
 	@echo "  make clean             - Remove venv, node_modules and build artifacts"
 	@echo "  make status            - Show git and submodule status"
@@ -94,7 +96,11 @@ update:
 	git submodule update --remote --merge
 	@echo "✓ Submodules updated"
 
-test:
+test-unit:
+	@echo "==> Running backend unit tests..."
+	./venv/bin/python -m unittest discover -s tests -v
+
+test: test-unit
 	@if [ ! -f ".env" ]; then \
 		echo "❌ Error: .env file not found. Copy sample.env to .env and add your DEEPGRAM_API_KEY"; \
 		exit 1; \
@@ -174,4 +180,3 @@ eject-frontend:
 	@echo ""
 	@echo "✅ Eject complete! Frontend files are now regular tracked files."
 	@echo "   Run 'git add . && git commit' to save the changes."
-
