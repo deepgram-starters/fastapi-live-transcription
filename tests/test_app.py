@@ -148,6 +148,7 @@ class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sdk.listen.v1.query["model"], "nova-3")
         self.assertEqual(sdk.listen.v1.query["language"], "es")
         self.assertEqual(sdk.listen.v1.query["channels"], "1")
+        self.assertEqual(sdk.listen.v1.query["interim_results"], "true")
         self.assertEqual(
             sdk.listen.v1.query["request_options"],
             {"additional_query_parameters": {"no_delay": "true"}},
@@ -245,6 +246,64 @@ class LiveTranscriptionTests(unittest.IsolatedAsyncioTestCase):
             await app.live_transcription(websocket)
 
         self.assertEqual(websocket.text_messages, [])
+
+    async def test_forwards_explicit_interim_results_false(self):
+        connection = FakeConnection()
+        sdk = FakeDeepgram(FakeConnect(connection=connection))
+        websocket = FakeWebSocket(
+            self.token(),
+            [{"type": "websocket.disconnect"}],
+            query_params={"interim_results": "false"},
+            receive_delay=0.001,
+        )
+
+        with patch.object(app, "deepgram", sdk):
+            await app.live_transcription(websocket)
+
+        self.assertEqual(sdk.listen.v1.query["interim_results"], "false")
+
+    async def test_ignores_audio_after_close_stream(self):
+        connection = FakeConnection()
+        sdk = FakeDeepgram(FakeConnect(connection=connection))
+        websocket = FakeWebSocket(
+            self.token(),
+            [
+                {"text": '{"type":"CloseStream"}'},
+                {"bytes": b"late-audio"},
+                {"type": "websocket.disconnect"},
+            ],
+            receive_delay=0.001,
+        )
+
+        with patch.object(app, "deepgram", sdk):
+            await app.live_transcription(websocket)
+
+        self.assertEqual(connection.controls, ["CloseStream"])
+        self.assertEqual(connection.media, [])
+        self.assertEqual(websocket.text_messages, [])
+
+    async def test_malformed_control_message_reaches_client_as_error(self):
+        sdk = FakeDeepgram(FakeConnect(connection=FakeConnection()))
+        websocket = FakeWebSocket(
+            self.token(),
+            [
+                {"text": "not-json"},
+                {"type": "websocket.disconnect"},
+            ],
+            receive_delay=0.001,
+        )
+
+        with patch.object(app, "deepgram", sdk):
+            await app.live_transcription(websocket)
+
+        self.assertEqual(
+            json.loads(websocket.text_messages[0]),
+            {
+                "type": "Error",
+                "description": "Invalid control message",
+                "code": "INVALID_CLIENT_MESSAGE",
+            },
+        )
 
 
 if __name__ == "__main__":
