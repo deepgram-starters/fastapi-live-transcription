@@ -34,6 +34,8 @@ Open [http://localhost:8080](http://localhost:8080) in your browser.
 
 ### Python & pnpm
 
+The frontend requires Node.js `^20.19.0 || >=22.12.0`.
+
 ```bash
 git clone --recurse-submodules https://github.com/deepgram-starters/fastapi-live-transcription.git
 cd fastapi-live-transcription

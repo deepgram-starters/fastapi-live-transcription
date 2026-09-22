@@ -261,6 +261,7 @@ async def live_transcription(websocket: WebSocket):
 
             # Forward audio + control messages from client to Deepgram
             try:
+                stream_closed = False
                 while True:
                     message = await websocket.receive()
                     if message.get("type") == "websocket.disconnect":
@@ -268,7 +269,8 @@ async def live_transcription(websocket: WebSocket):
 
                     audio = message.get("bytes")
                     if audio is not None:
-                        await connection.send_media(audio)
+                        if not stream_closed:
+                            await connection.send_media(audio)
                         continue
 
                     text = message.get("text")
@@ -280,6 +282,11 @@ async def live_transcription(websocket: WebSocket):
                         control = json.loads(text)
                     except (ValueError, TypeError):
                         print("Ignoring non-JSON message from client")
+                        await websocket.send_text(json.dumps({
+                            "type": "Error",
+                            "description": "Invalid control message",
+                            "code": "INVALID_CLIENT_MESSAGE"
+                        }))
                         continue
 
                     ctype = control.get("type")
@@ -294,6 +301,7 @@ async def live_transcription(websocket: WebSocket):
                             await connection.send_finalize()
                     elif ctype == "CloseStream":
                         await connection.send_close_stream()
+                        stream_closed = True
                     else:
                         print(f"Ignoring unknown client message type: {ctype}")
 
